@@ -1,0 +1,75 @@
+name: Lab CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: api/requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          mkdir -p reports
+          npm ci --prefix web --no-audit --no-fund
+          python -m pip install -r api/requirements-dev.txt
+
+      - name: Run Ruff and ESLint
+        run: |
+          ruff check api scripts
+          npm run lint --prefix web
+
+      - name: Test API, metrics, and AI evaluation gate
+        working-directory: api
+        run: python -m pytest --junitxml=../reports/pytest.xml
+
+      - name: Test frontend and build
+        working-directory: web
+        run: |
+          npm test -- --reporter=default --reporter=junit --outputFile.junit=../reports/vitest.xml
+          npm run build
+
+      - name: Browser flows, accessibility and screenshots
+        working-directory: web
+        run: |
+          npx playwright install --with-deps --only-shell chromium
+          npm run test:e2e
+
+      - name: Summarize test results
+        if: always()
+        run: |
+          mkdir -p reports
+          result=0
+          python scripts/report.py || result=$?
+          cat reports/summary.md >> "$GITHUB_STEP_SUMMARY"
+          exit "$result"
+
+      - name: Upload reports and screenshots
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: agile-lab-qa-report
+          path: |
+            reports/
+            docs/ux/
+            web/test-results/
+          if-no-files-found: error
+          retention-days: 14
